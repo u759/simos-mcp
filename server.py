@@ -52,12 +52,27 @@ def _get_or_load(bin_path: str, xdf_path: str | None = None) -> BinFile:
 
 
 def _find_table(bf: BinFile, name: str) -> TableDef | None:
-    """Find a table by title (case-insensitive partial match)."""
+    """Find a table by title (case-insensitive partial match).
+
+    Prefers the main table over axis sub-tables when multiple match.
+    """
     name_lower = name.lower()
+    best = None
+    best_size = 0
     for t in bf.xdf.tables:
         if name_lower in t.title.lower():
-            return t
-    return None
+            # Calculate total cells for ranking
+            size = 0
+            if t.z_axis:
+                size = t.z_axis.row_count * t.z_axis.col_count
+            # Penalize axis tables (they have "axis" in the title)
+            is_axis = "axis" in t.title.lower()
+            if is_axis:
+                size = max(size - 1000, 0)
+            if size > best_size:
+                best_size = size
+                best = t
+    return best
 
 
 def _find_scalar(bf: BinFile, name: str) -> ConstantDef | None:
@@ -163,7 +178,7 @@ def tool_read_table(bin_path: str, table_name: str, xdf_path: str = "") -> str:
             return json.dumps({"error": f"No table matching '{table_name}' found"})
 
         data = bf.read_table(table)
-        return json.dumps(data, indent=2)
+        return bf.format_table(data)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -213,12 +228,8 @@ def tool_write_table(bin_path: str, table_name: str, data: str,
         if save:
             bf.save()
 
-        return json.dumps({
-            "status": "ok",
-            "table": table.title,
-            "written": f"{len(new_data)}x{len(new_data[0]) if new_data else 0}",
-            "saved": save,
-        })
+        preview = bf.format_table(bf.read_table(table))
+        return f"Written {len(new_data)}x{len(new_data[0]) if new_data else 0} to '{table.title}' (saved={save})\n\n{preview}"
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -262,28 +273,33 @@ def tool_write_scalar(bin_path: str, scalar_name: str, value: float,
 def tool_diff_bins(bin_path_a: str, bin_path_b: str,
                    xdf_path_a: str = "", xdf_path_b: str = "") -> str:
     """
-    Compare two BIN files and show differences.
+    Compare two BIN files and list which tables changed.
 
-    Args:
-        bin_path_a: Path to the first BIN file
-        bin_path_b: Path to the second BIN file
-        xdf_path_a: Optional XDF for first BIN
-        xdf_path_b: Optional XDF for second BIN
+    Returns a lightweight summary. Use diff_table() for full details on a specific table.
     """
     try:
         bf_a = _get_or_load(bin_path_a, xdf_path_a or None)
         bf_b = _get_or_load(bin_path_b, xdf_path_b or None)
 
-        diffs = bf_a.diff(bf_b)
-        return json.dumps({
-            "file_a": bin_path_a,
-            "file_b": bin_path_b,
-            "differences": len(diffs),
-            "changes": diffs[:50],
-        }, indent=2)
+        return bf_a.diff_summary(bf_b)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
+
+def tool_diff_table(bin_path_a: str, bin_path_b: str, table_name: str,
+                    xdf_path_a: str = "", xdf_path_b: str = "") -> str:
+    """
+    Show full diff for a specific table between two BIN files.
+
+    Displays old -> new for every changed cell with axis labels.
+    """
+    try:
+        bf_a = _get_or_load(bin_path_a, xdf_path_a or None)
+        bf_b = _get_or_load(bin_path_b, xdf_path_b or None)
+
+        return bf_a.diff_table(bf_b, table_name)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 def tool_validate_table(bin_path: str, table_name: str,
                         xdf_path: str = "") -> str:
@@ -379,7 +395,7 @@ TOOLS = {
         },
     },
     "read_table": {
-        "description": "Read a table's data from a BIN file. Returns x-axis, y-axis, and 2D data array with display values.",
+        "description": "Read a table from a BIN file. Returns a formatted text grid with axis labels and scaled values.",
         "function": tool_read_table,
         "parameters": {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
@@ -419,7 +435,7 @@ TOOLS = {
         },
     },
     "diff_bins": {
-        "description": "Compare two BIN files and list all differences in tables and scalars.",
+        "description": "Compare two BIN files. Returns compact text showing only changed cells with before/after values.",
         "function": tool_diff_bins,
         "parameters": {
             "bin_path_a": {"type": "string", "description": "Path to first BIN"},
@@ -444,6 +460,17 @@ TOOLS = {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
             "search": {"type": "string", "description": "Search term"},
             "xdf_path": {"type": "string", "description": "Optional XDF path", "default": ""},
+        },
+    },
+    "diff_table": {
+        "description": "Show full diff for a specific table between two BIN files. Use after diff_bins to inspect details.",
+        "function": tool_diff_table,
+        "parameters": {
+            "bin_path_a": {"type": "string", "description": "Path to first BIN"},
+            "bin_path_b": {"type": "string", "description": "Path to second BIN"},
+            "table_name": {"type": "string", "description": "Table title (partial match)"},
+            "xdf_path_a": {"type": "string", "description": "Optional XDF for first BIN", "default": ""},
+            "xdf_path_b": {"type": "string", "description": "Optional XDF for second BIN", "default": ""},
         },
     },
 }

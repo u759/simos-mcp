@@ -213,6 +213,37 @@ class BinFile:
 
         return result
 
+    @staticmethod
+    def format_table(data: dict) -> str:
+        """Format table data as a compact, AI-readable text grid."""
+        title = data["title"]
+        units = data.get("units", "")
+        x_axis = data.get("x_axis", [])
+        y_axis = data.get("y_axis", [])
+        rows = data.get("data", [])
+
+        if not rows:
+            return f"{title}: (empty)"
+
+        # Determine column widths
+        # Header row: X-axis values
+        row_labels = [f"{v:g}" for v in y_axis] if y_axis else [str(i) for i in range(len(rows))]
+        col_labels = [f"{v:g}" for v in x_axis] if x_axis else [str(i) for i in range(len(rows[0]))]
+
+        label_w = max(len(l) for l in row_labels) if row_labels else 0
+        col_w = max(max(len(l) for l in col_labels), 8) if col_labels else 8
+
+        lines = []
+        header = " " * (label_w + 1) + "  ".join(f"{l:>{col_w}}" for l in col_labels)
+        lines.append(f"{title} ({units})" if units else title)
+        lines.append(header)
+
+        for i, row in enumerate(rows):
+            label = row_labels[i] if i < len(row_labels) else str(i)
+            vals = "  ".join(f"{v:>{col_w}.2f}" for v in row)
+            lines.append(f"{label:>{label_w}}: {vals}")
+
+        return "\n".join(lines)
     def write_table(self, table: TableDef, data: list[list[float]],
                     x_axis: Optional[list[float]] = None,
                     y_axis: Optional[list[float]] = None):
@@ -320,3 +351,123 @@ class BinFile:
                     pass
 
         return differences
+
+    @staticmethod
+    def _fmt_axis(axis: list, idx: int) -> str:
+        """Format an axis value as a label string."""
+        if idx < len(axis):
+            val = axis[idx]
+            if isinstance(val, (int, float)):
+                return f"{val:g}"
+            return str(val)
+        return f"idx{idx}"
+
+    def diff_summary(self, other: "BinFile") -> str:
+        """Compare two BINs and return a lightweight summary of what changed.
+
+        Just lists table names and change counts. Use diff_table() for details.
+        """
+        lines = []
+        table_count = 0
+        scalar_count = 0
+
+        for table in self.xdf.tables:
+            if table.z_axis and table.z_axis.address is not None:
+                try:
+                    self_data = self.read_table(table)
+                    other_data = other.read_table(table)
+
+                    if self_data["data"] == other_data["data"]:
+                        continue
+
+                    table_count += 1
+                    s_rows = self_data["data"]
+                    o_rows = other_data["data"]
+                    total = len(s_rows) * len(s_rows[0]) if s_rows else 0
+
+                    changed = 0
+                    for r in range(len(s_rows)):
+                        for c in range(len(s_rows[r])):
+                            if r < len(o_rows) and c < len(o_rows[r]):
+                                if s_rows[r][c] != o_rows[r][c]:
+                                    changed += 1
+
+                    units = self_data.get("units", "")
+                    size = f"{len(s_rows)}x{len(s_rows[0])}" if s_rows else "?"
+                    lines.append(f"  {table_count:3d}. {table.title} ({units}) [{changed}/{total} cells, {size}]")
+                except Exception:
+                    pass
+
+        for const in self.xdf.constants:
+            if const.address is not None:
+                try:
+                    self_val = self.read_scalar(const)
+                    other_val = other.read_scalar(const)
+                    if self_val["value"] != other_val["value"]:
+                        scalar_count += 1
+                        lines.append(f"  {table_count + scalar_count:3d}. {const.title} ({const.units}) [scalar]")
+                except Exception:
+                    pass
+
+        if not lines:
+            return "No differences found."
+
+        header = f"Diff: {table_count} table{'s' if table_count != 1 else ''}, {scalar_count} scalar{'s' if scalar_count != 1 else ''} changed"
+        return header + "\n" + "\n".join(lines)
+
+    def diff_table(self, other: "BinFile", table_name: str) -> str:
+        """Show full side-by-side diff for a specific table.
+
+        Displays old and new values for every changed cell, with axis labels.
+        """
+        table = None
+        name_lower = table_name.lower()
+        for t in self.xdf.tables:
+            if name_lower in t.title.lower():
+                table = t
+                break
+
+        if table is None:
+            return f"No table matching '{table_name}' found."
+
+        try:
+            self_data = self.read_table(table)
+            other_data = other.read_table(table)
+        except Exception as e:
+            return f"Error reading table: {e}"
+
+        if self_data["data"] == other_data["data"]:
+            return f"{table.title}: No differences."
+
+        units = self_data.get("units", "")
+        x_axis = self_data.get("x_axis", [])
+        y_axis = self_data.get("y_axis", [])
+        s_rows = self_data["data"]
+        o_rows = other_data["data"]
+
+        lines = [f"=== {table.title} ({units}) ==="]
+
+        # Find changed cells
+        changes = []
+        for r in range(len(s_rows)):
+            for c in range(len(s_rows[r])):
+                if r < len(o_rows) and c < len(o_rows[r]):
+                    if s_rows[r][c] != o_rows[r][c]:
+                        changes.append((r, c, s_rows[r][c], o_rows[r][c]))
+
+        lines.append(f"{len(changes)} cell{'s' if len(changes) != 1 else ''} changed\n")
+
+        # Group changes by row
+        row_changes = {}
+        for r, c, old, new in changes:
+            row_changes.setdefault(r, []).append((c, old, new))
+
+        for r, cell_changes in sorted(row_changes.items()):
+            y_label = self._fmt_axis(y_axis, r)
+            lines.append(f"Row [{y_label}]:")
+            for c, old, new in cell_changes:
+                x_label = self._fmt_axis(x_axis, c)
+                lines.append(f"  {x_label}: {old} -> {new}")
+            lines.append("")
+
+        return "\n".join(lines)
