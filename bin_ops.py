@@ -227,8 +227,12 @@ class BinFile:
 
         # Determine column widths
         # Header row: X-axis values
-        row_labels = [f"{v:g}" for v in y_axis] if y_axis else [str(i) for i in range(len(rows))]
-        col_labels = [f"{v:g}" for v in x_axis] if x_axis else [str(i) for i in range(len(rows[0]))]
+        def _fmt(v):
+            if isinstance(v, (int, float)):
+                return f"{v:g}"
+            return str(v)
+        row_labels = [_fmt(v) for v in y_axis] if y_axis else [str(i) for i in range(len(rows))]
+        col_labels = [_fmt(v) for v in x_axis] if x_axis else [str(i) for i in range(len(rows[0]))]
 
         label_w = max(len(l) for l in row_labels) if row_labels else 0
         col_w = max(max(len(l) for l in col_labels), 8) if col_labels else 8
