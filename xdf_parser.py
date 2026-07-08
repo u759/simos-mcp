@@ -116,9 +116,31 @@ class MathExpr:
         # Numerical fallback: bisection to find X such that forward(X) = display_val
         try:
             lo, hi = -1e6, 1e6
+            # Find bracket where display_val is between forward(lo) and forward(hi)
+            f_lo = f_hi = None
+            candidates = [(-1e6, 1e6), (-1000, 1e6), (-100, 1e6), (0, 1e6),
+                          (0.001, 1e6), (1, 1e6), (10, 1e6), (100, 1e6)]
+            for attempt_lo, attempt_hi in candidates:
+                try:
+                    f_lo = self.forward(attempt_lo)
+                    f_hi = self.forward(attempt_hi)
+                    lo, hi = attempt_lo, attempt_hi
+                    # Check target is within range (accounting for direction)
+                    if (f_lo <= display_val <= f_hi) or (f_hi <= display_val <= f_lo):
+                        break
+                except (ZeroDivisionError, OverflowError, ValueError):
+                    continue
+            if f_lo is None:
+                raise ValueError("Cannot find valid bracket")
+            increasing = f_lo < f_hi
             for _ in range(100):
                 mid = (lo + hi) / 2.0
-                if self.forward(mid) < display_val:
+                try:
+                    f_mid = self.forward(mid)
+                except (ZeroDivisionError, OverflowError):
+                    hi = mid
+                    continue
+                if (f_mid < display_val) == increasing:
                     lo = mid
                 else:
                     hi = mid
