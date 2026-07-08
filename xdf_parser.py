@@ -27,9 +27,17 @@ class MathExpr:
     """A MATH equation that transforms raw BIN values to display values."""
     equation: str
 
+    @staticmethod
+    def _normalize_equation(eq: str) -> str:
+        """Fix common XDF typos in MATH equations before eval."""
+        # Fix '2.66667.0' style typos → '2.66667' (number.number.number → number.number)
+        eq = re.sub(r'(\d+\.\d+)\.(\d+)', r'\1', eq)
+        return eq
+
     def forward(self, raw_val: float) -> float:
         """Raw BIN value -> display value."""
-        return eval(self.equation, {"__builtins__": {}}, {"X": raw_val, "x": raw_val})
+        return eval(self._normalize_equation(self.equation),
+                    {"__builtins__": {}}, {"X": raw_val, "x": raw_val})
 
     def inverse(self, display_val: float) -> float:
         """Display value -> raw BIN value (exact algebraic inversion).
@@ -37,13 +45,28 @@ class MathExpr:
         Supports all common linear XDF equation patterns.
         Raises ValueError for unsupported non-linear equations.
         """
-        eq = self.equation.strip()
+        eq = self._normalize_equation(self.equation).strip()
 
         # Normalize: add spaces around operators to help regex matching
         # e.g. "X*0.000061035156-2" -> "X * 0.000061035156 - 2"
         eq = re.sub(r'(\d)([+\-])', r'\1 \2', eq)
         eq = re.sub(r'([+\-])(\d)', r'\1 \2', eq)
         eq = re.sub(r'\s+', ' ', eq).strip()
+
+        # Simplify algebraic identities so regex patterns match
+        # (1.0 * X) -> X, (0.0 * X) -> 0.0, X + 0.0 -> X, X - 0.0 -> X
+        eq = re.sub(r'\(\s*1\.0*\s*\*\s*X\s*\)', 'X', eq)
+        eq = re.sub(r'\(\s*0\.0*\s*\*\s*X\s*\)', '0.0', eq)
+        eq = re.sub(r'\(\s*X\s*\*\s*1\.0*\s*\)', 'X', eq)
+        eq = re.sub(r'\(\s*X\s*\*\s*0\.0*\s*\)', '0.0', eq)
+        # Remove redundant no-ops: X + 0.0, X - 0.0, 0.0 + X
+        eq = re.sub(r'X\s*\+\s*0\.0+', 'X', eq)
+        eq = re.sub(r'X\s*\-\s*0\.0+', 'X', eq)
+        eq = re.sub(r'0\.0+\s*\+\s*X', 'X', eq)
+        eq = re.sub(r'0\.0+\s*\-\s*X', '-X', eq)
+        # Remove now-redundant outer parens around a single term: (X) -> X
+        eq = re.sub(r'\(\s*X\s*\)', 'X', eq)
+        eq = re.sub(r'\(\s*(-?\d+\.?\d*)\s*\)', r'\1', eq)
 
         # Identity
         if eq == "X":
@@ -115,11 +138,14 @@ class MathExpr:
 
         # Numerical fallback: bisection to find X such that forward(X) = display_val
         try:
-            lo, hi = -1e6, 1e6
+            lo = hi = 0.0
             # Find bracket where display_val is between forward(lo) and forward(hi)
             f_lo = f_hi = None
-            candidates = [(-1e6, 1e6), (-1000, 1e6), (-100, 1e6), (0, 1e6),
-                          (0.001, 1e6), (1, 1e6), (10, 1e6), (100, 1e6)]
+            # Search ranges covering typical raw value spans (up to 32-bit unsigned)
+            candidates = [
+                (-1e6, 1e6), (0, 1e6), (0, 1e9), (0, 1e12),
+                (-1e6, 0), (-1e9, 0), (-1e12, 0),
+            ]
             for attempt_lo, attempt_hi in candidates:
                 try:
                     f_lo = self.forward(attempt_lo)
@@ -130,8 +156,13 @@ class MathExpr:
                         break
                 except (ZeroDivisionError, OverflowError, ValueError):
                     continue
-            if f_lo is None:
+            if f_lo is None or f_hi is None:
                 raise ValueError("Cannot find valid bracket")
+            # Verify target is within the bracket
+            lo_val, hi_val = min(f_lo, f_hi), max(f_lo, f_hi)
+            if display_val < lo_val or display_val > hi_val:
+                raise ValueError(
+                    f"Display value {display_val} outside search range [{lo_val}, {hi_val}]")
             increasing = f_lo < f_hi
             for _ in range(100):
                 mid = (lo + hi) / 2.0

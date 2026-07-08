@@ -36,6 +36,15 @@ def _write_element(bin_data: bytearray, address: int, size_bits: int,
     size_bytes = size_bits // 8
     endian = "<" if little_endian else ">"
 
+    # Clamp to valid range for the element size
+    if signed:
+        lo = -(1 << (size_bits - 1))
+        hi = (1 << (size_bits - 1)) - 1
+    else:
+        lo = 0
+        hi = (1 << size_bits) - 1
+    value = max(lo, min(hi, int(value)))
+
     if size_bytes == 1:
         fmt = "b" if signed else "B"
     elif size_bytes == 2:
