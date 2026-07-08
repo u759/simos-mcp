@@ -39,6 +39,12 @@ class MathExpr:
         """
         eq = self.equation.strip()
 
+        # Normalize: add spaces around operators to help regex matching
+        # e.g. "X*0.000061035156-2" -> "X * 0.000061035156 - 2"
+        eq = re.sub(r'(\d)([+\-])', r'\1 \2', eq)
+        eq = re.sub(r'([+\-])(\d)', r'\1 \2', eq)
+        eq = re.sub(r'\s+', ' ', eq).strip()
+
         # Identity
         if eq == "X":
             return display_val
