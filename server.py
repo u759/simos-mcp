@@ -205,6 +205,7 @@ def tool_read_scalar(bin_path: str, scalar_name: str, xdf_path: str = "") -> str
 
 
 def tool_write_table(bin_path: str, table_name: str, data: str,
+                     x_axis: str = "", y_axis: str = "",
                      xdf_path: str = "", save: bool = True) -> str:
     """
     Write data to a table in a BIN file.
@@ -213,6 +214,8 @@ def tool_write_table(bin_path: str, table_name: str, data: str,
         bin_path: Path to the BIN file
         table_name: Table title to search for
         data: JSON string of 2D array [[row0], [row1], ...]
+        x_axis: Optional JSON array of new x-axis values [val1, val2, ...]
+        y_axis: Optional JSON array of new y-axis values [val1, val2, ...]
         xdf_path: Optional path to the XDF file
         save: Whether to save the file after writing
     """
@@ -223,13 +226,21 @@ def tool_write_table(bin_path: str, table_name: str, data: str,
             return json.dumps({"error": f"No table matching '{table_name}' found"})
 
         new_data = json.loads(data)
-        bf.write_table(table, new_data)
+        new_x = json.loads(x_axis) if x_axis else None
+        new_y = json.loads(y_axis) if y_axis else None
+        bf.write_table(table, new_data, x_axis=new_x, y_axis=new_y)
 
         if save:
             bf.save()
 
         preview = bf.format_table(bf.read_table(table))
-        return f"Written {len(new_data)}x{len(new_data[0]) if new_data else 0} to '{table.title}' (saved={save})\n\n{preview}"
+        changes = []
+        changes.append(f"{len(new_data)}x{len(new_data[0]) if new_data else 0} Z-data")
+        if new_x:
+            changes.append(f"{len(new_x)} x-axis values")
+        if new_y:
+            changes.append(f"{len(new_y)} y-axis values")
+        return f"Written {', '.join(changes)} to '{table.title}' (saved={save})\n\n{preview}"
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -419,6 +430,8 @@ TOOLS = {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
             "table_name": {"type": "string", "description": "Table title (partial match)"},
             "data": {"type": "string", "description": "JSON 2D array [[row0], [row1], ...]"},
+            "x_axis": {"type": "string", "description": "Optional JSON array of new x-axis values", "default": ""},
+            "y_axis": {"type": "string", "description": "Optional JSON array of new y-axis values", "default": ""},
             "xdf_path": {"type": "string", "description": "Optional XDF path", "default": ""},
             "save": {"type": "boolean", "description": "Save after writing", "default": True},
         },

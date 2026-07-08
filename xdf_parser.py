@@ -164,6 +164,7 @@ class TableDef:
     x_axis: Optional[AxisDef] = None
     y_axis: Optional[AxisDef] = None
     z_axis: Optional[AxisDef] = None
+    is_axis: bool = False  # True for axis display entries (not real tables)
 
     @property
     def is_1d(self) -> bool:
@@ -440,6 +441,10 @@ def parse_xdf(filepath: str) -> XdfFile:
         if y_axis and y_axis.address is not None:
             y_axis.address = y_axis.address + base_offset - base_subtract
 
+        # Detect axis display entries (not real tables)
+        # These have titles like "Table Name : x axis : variable_name"
+        is_axis_entry = " : x axis :" in title.lower() or " : y axis :" in title.lower()
+
         tables.append(TableDef(
             unique_id=unique_id,
             title=title,
@@ -448,6 +453,7 @@ def parse_xdf(filepath: str) -> XdfFile:
             x_axis=x_axis,
             y_axis=y_axis,
             z_axis=z_axis,
+            is_axis=is_axis_entry,
         ))
 
     # Parse constants
