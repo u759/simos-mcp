@@ -1,4 +1,4 @@
-# SimosMCP
+# simos-mcp
 
 MCP server for Simos 18.1 ECU tuning — read, write, diff, and validate XDF/BIN files.
 
@@ -36,10 +36,10 @@ Add to `.vscode/mcp.json`:
 ```json
 {
   "servers": {
-    "SimosMCP": {
+    "simos-mcp": {
       "type": "stdio",
       "command": "python",
-      "args": ["path/to/simosmcp/server.py"]
+      "args": ["path/to/simos-mcp/server.py"]
     }
   }
 }
@@ -48,7 +48,7 @@ Add to `.vscode/mcp.json`:
 ### Or run directly
 
 ```bash
-cd path/to/simosmcp
+cd path/to/simos-mcp
 python server.py
 ```
 
