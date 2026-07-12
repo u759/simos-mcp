@@ -13,11 +13,21 @@ Reads XDF definition files and BIN binary files, letting you:
 - **Write** scalar values back to BIN files
 - **Diff** two BIN files to see what changed
 - **Validate** tables against their min/max ranges
-- **Search** for tables by name
+- **Search** for tables by name (fuzzy matching via `rapidfuzz`)
 
 ## Setup
 
-No dependencies beyond Python 3.10+. Uses only standard library (`xml.etree.ElementTree`, `struct`).
+Requires Python 3.10+ and the `rapidfuzz` package.
+
+```bash
+pip install rapidfuzz
+```
+
+Or, if using the project's `pyproject.toml`:
+
+```bash
+pip install -e .
+```
 
 ### VS Code MCP config
 
@@ -53,7 +63,7 @@ python server.py
 | `write_scalar` | Write a value to a scalar in a BIN |
 | `diff_bins` | Compare two BINs and show differences |
 | `validate_table` | Check a table's values against min/max ranges |
-| `search_tables` | Search for tables/scalars by name |
+| `search_tables` | Fuzzy search for tables/scalars by name |
 
 ## How it works
 
