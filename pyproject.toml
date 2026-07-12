@@ -3,7 +3,9 @@ name = "simosmcp"
 version = "1.0.0"
 description = "MCP server for Simos 18.1 ECU tuning — read, write, diff, and validate XDF/BIN files"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "rapidfuzz>=3.0",
+]
 
 [project.scripts]
 simosmcp = "server:main"

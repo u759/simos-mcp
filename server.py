@@ -6,13 +6,13 @@ MCP server for Simos 18.1 ECU tuning — read, write, diff, and validate XDF/BIN
 import json
 import os
 import sys
-from typing import Any
 
 from xdf_parser import parse_xdf, XdfFile, TableDef, ConstantDef
 from bin_ops import BinFile
+from fuzzy_search import search_items, fuzzy_find
 
 # ── Global state ──────────────────────────────────────────────────────────────
-# Maps of loaded files: name -> BinFile
+
 _loaded_bins: dict[str, BinFile] = {}
 _loaded_xdfs: dict[str, XdfFile] = {}
 
@@ -20,7 +20,6 @@ _loaded_xdfs: dict[str, XdfFile] = {}
 def _find_xdf_for_bin(bin_path: str) -> str | None:
     """Try to find a matching XDF file for a given BIN."""
     bin_dir = os.path.dirname(bin_path)
-    bin_name = os.path.splitext(os.path.basename(bin_path))[0]
 
     # Look in same directory and parent directories
     search_dirs = [bin_dir, os.path.dirname(bin_dir)]
@@ -38,7 +37,6 @@ def _get_or_load(bin_path: str, xdf_path: str | None = None) -> BinFile:
     if bin_path in _loaded_bins:
         return _loaded_bins[bin_path]
 
-    # Find XDF
     if xdf_path is None:
         xdf_path = _find_xdf_for_bin(bin_path)
     if xdf_path is None:
@@ -52,22 +50,22 @@ def _get_or_load(bin_path: str, xdf_path: str | None = None) -> BinFile:
 
 
 def _find_table(bf: BinFile, name: str) -> TableDef | None:
-    """Find a table by title (case-insensitive partial match).
+    """Find a table by title using fuzzy search.
 
     Prefers the main table over axis sub-tables when multiple match.
     """
+    result = fuzzy_find(name, bf.xdf.tables, best_only=True)
+    if result is not None:
+        return result
+
+    # Fallback: substring match for axis tables that fuzzy might rank lower
     name_lower = name.lower()
-    best = None
+    best: TableDef | None = None
     best_size = 0
     for t in bf.xdf.tables:
         if name_lower in t.title.lower():
-            # Calculate total cells for ranking
-            size = 0
-            if t.z_axis:
-                size = t.z_axis.row_count * t.z_axis.col_count
-            # Penalize axis tables (they have "axis" in the title)
-            is_axis = "axis" in t.title.lower()
-            if is_axis:
+            size = t.z_axis.row_count * t.z_axis.col_count if t.z_axis else 0
+            if "axis" in t.title.lower():
                 size = max(size - 1000, 0)
             if size > best_size:
                 best_size = size
@@ -76,7 +74,12 @@ def _find_table(bf: BinFile, name: str) -> TableDef | None:
 
 
 def _find_scalar(bf: BinFile, name: str) -> ConstantDef | None:
-    """Find a scalar by title (case-insensitive partial match)."""
+    """Find a scalar by title using fuzzy search."""
+    result = fuzzy_find(name, bf.xdf.constants, best_only=True)
+    if result is not None:
+        return result
+
+    # Fallback: substring match
     name_lower = name.lower()
     for c in bf.xdf.constants:
         if name_lower in c.title.lower():
@@ -157,7 +160,7 @@ def tool_list_tables(bin_path: str, xdf_path: str = "", category: str = "",
         "base_offset": f"0x{bf.xdf.header.base_offset:X}",
         "table_count": len(bf.xdf.tables),
         "scalar_count": len(bf.xdf.constants),
-        "results": results[:200],  # limit output
+        "results": results[:200],
         "total": len(results),
     }, indent=2)
 
@@ -168,7 +171,7 @@ def tool_read_table(bin_path: str, table_name: str, xdf_path: str = "") -> str:
 
     Args:
         bin_path: Path to the BIN file
-        table_name: Table title to search for (partial match, case-insensitive)
+        table_name: Table title to search for (fuzzy match)
         xdf_path: Optional path to the XDF file
     """
     try:
@@ -189,7 +192,7 @@ def tool_read_scalar(bin_path: str, scalar_name: str, xdf_path: str = "") -> str
 
     Args:
         bin_path: Path to the BIN file
-        scalar_name: Scalar title to search for (partial match)
+        scalar_name: Scalar title to search for (fuzzy match)
         xdf_path: Optional path to the XDF file
     """
     try:
@@ -312,6 +315,7 @@ def tool_diff_table(bin_path_a: str, bin_path_b: str, table_name: str,
     except Exception as e:
         return json.dumps({"error": str(e)})
 
+
 def tool_validate_table(bin_path: str, table_name: str,
                         xdf_path: str = "") -> str:
     """
@@ -354,37 +358,45 @@ def tool_validate_table(bin_path: str, table_name: str,
 
 def tool_search_tables(bin_path: str, search: str, xdf_path: str = "") -> str:
     """
-    Search for tables/scalars matching a search term.
+    Search for tables/scalars using fuzzy matching.
+
+    Results are scored (0-100) and ranked. Match types:
+      - exact:   search is a substring of the title
+      - token:   all search words found in title
+      - fuzzy:   approximate string similarity (rapidfuzz)
+      - partial: best substring similarity
 
     Args:
         bin_path: Path to the BIN file
-        search: Search term (case-insensitive)
+        search: Search term (fuzzy matching, case-insensitive)
         xdf_path: Optional path to the XDF file
     """
     try:
         bf = _get_or_load(bin_path, xdf_path or None)
-        results = []
 
-        for t in bf.xdf.tables:
-            if search.lower() in t.title.lower():
-                results.append({
-                    "type": "table",
-                    "title": t.title,
-                    "size": f"{t.z_axis.row_count}x{t.z_axis.col_count}" if t.z_axis else "?",
-                    "units": t.z_axis.units if t.z_axis else "",
-                })
+        def _table_extra(t: TableDef) -> dict:
+            d: dict = {"type": "table"}
+            if t.z_axis:
+                d["size"] = f"{t.z_axis.row_count}x{t.z_axis.col_count}"
+                d["units"] = t.z_axis.units
+            return d
 
-        for c in bf.xdf.constants:
-            if search.lower() in c.title.lower():
-                results.append({
-                    "type": "scalar",
-                    "title": c.title,
-                    "units": c.units,
-                })
+        def _const_extra(c: ConstantDef) -> dict:
+            return {"type": "scalar", "units": c.units}
+
+        table_results = search_items(
+            search, bf.xdf.tables, max_results=100, extra_fn=_table_extra)
+        scalar_results = search_items(
+            search, bf.xdf.constants, max_results=100, extra_fn=_const_extra)
+
+        all_results = table_results + scalar_results
+        all_results.sort(key=lambda r: r.score, reverse=True)
+
+        results = [r.to_dict() for r in all_results[:100]]
 
         return json.dumps({
             "search": search,
-            "results": results[:100],
+            "results": results,
             "total": len(results),
         }, indent=2)
     except Exception as e:
@@ -410,7 +422,7 @@ TOOLS = {
         "function": tool_read_table,
         "parameters": {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
-            "table_name": {"type": "string", "description": "Table title (partial match)"},
+            "table_name": {"type": "string", "description": "Table title (fuzzy match)"},
             "xdf_path": {"type": "string", "description": "Optional XDF path", "default": ""},
         },
     },
@@ -419,7 +431,7 @@ TOOLS = {
         "function": tool_read_scalar,
         "parameters": {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
-            "scalar_name": {"type": "string", "description": "Scalar title (partial match)"},
+            "scalar_name": {"type": "string", "description": "Scalar title (fuzzy match)"},
             "xdf_path": {"type": "string", "description": "Optional XDF path", "default": ""},
         },
     },
@@ -428,7 +440,7 @@ TOOLS = {
         "function": tool_write_table,
         "parameters": {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
-            "table_name": {"type": "string", "description": "Table title (partial match)"},
+            "table_name": {"type": "string", "description": "Table title (fuzzy match)"},
             "data": {"type": "string", "description": "JSON 2D array [[row0], [row1], ...]"},
             "x_axis": {"type": "string", "description": "Optional JSON array of new x-axis values", "default": ""},
             "y_axis": {"type": "string", "description": "Optional JSON array of new y-axis values", "default": ""},
@@ -441,7 +453,7 @@ TOOLS = {
         "function": tool_write_scalar,
         "parameters": {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
-            "scalar_name": {"type": "string", "description": "Scalar title (partial match)"},
+            "scalar_name": {"type": "string", "description": "Scalar title (fuzzy match)"},
             "value": {"type": "number", "description": "New display value"},
             "xdf_path": {"type": "string", "description": "Optional XDF path", "default": ""},
             "save": {"type": "boolean", "description": "Save after writing", "default": True},
@@ -462,16 +474,16 @@ TOOLS = {
         "function": tool_validate_table,
         "parameters": {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
-            "table_name": {"type": "string", "description": "Table title (partial match)"},
+            "table_name": {"type": "string", "description": "Table title (fuzzy match)"},
             "xdf_path": {"type": "string", "description": "Optional XDF path", "default": ""},
         },
     },
     "search_tables": {
-        "description": "Search for tables and scalars matching a term.",
+        "description": "Search for tables and scalars matching a term. Uses fuzzy matching — approximate/misspelled terms will still find relevant results. Results include a score (0-100) and match_type (exact, token, fuzzy, partial).",
         "function": tool_search_tables,
         "parameters": {
             "bin_path": {"type": "string", "description": "Path to the BIN file"},
-            "search": {"type": "string", "description": "Search term"},
+            "search": {"type": "string", "description": "Search term (fuzzy matching)"},
             "xdf_path": {"type": "string", "description": "Optional XDF path", "default": ""},
         },
     },
@@ -481,7 +493,7 @@ TOOLS = {
         "parameters": {
             "bin_path_a": {"type": "string", "description": "Path to first BIN"},
             "bin_path_b": {"type": "string", "description": "Path to second BIN"},
-            "table_name": {"type": "string", "description": "Table title (partial match)"},
+            "table_name": {"type": "string", "description": "Table title (fuzzy match)"},
             "xdf_path_a": {"type": "string", "description": "Optional XDF for first BIN", "default": ""},
             "xdf_path_b": {"type": "string", "description": "Optional XDF for second BIN", "default": ""},
         },
@@ -512,7 +524,7 @@ def _handle_request(request: dict) -> dict | None:
         }
 
     if method == "notifications/initialized":
-        return None  # No response needed
+        return None
 
     if method == "tools/list":
         tools_list = []
@@ -567,7 +579,6 @@ def _handle_request(request: dict) -> dict | None:
                 },
             }
 
-    # Unknown method
     if req_id is not None:
         return {
             "jsonrpc": "2.0",
@@ -578,14 +589,7 @@ def _handle_request(request: dict) -> dict | None:
 
 
 def main():
-    """Run the MCP server over stdio.
-
-    MCP stdio transport: newline-delimited JSON-RPC messages.
-    Each message is a single line of valid JSON terminated by a newline.
-    Messages MUST NOT contain embedded newlines.
-    """
-    import sys
-
+    """Run the MCP server over stdio."""
     while True:
         try:
             line = sys.stdin.readline()
